@@ -1,42 +1,59 @@
 from datetime import datetime
 import math
-from pyexpat import errors
 
-REQUIRED_FIELDS = ["transaction_id", "customer_id", "merchant", "amount", "city", "device", "timestamp"]
+
+REQUIRED_FIELDS = (
+    "transaction_id",
+    "customer_id",
+    "amount",
+    "merchant",
+    "city",
+    "device",
+    "timestamp",
+)
+
+STRING_FIELDS = ("transaction_id", "customer_id", "merchant", "city", "device")
+
 
 def validate_transaction(transaction):
-    errors = []
+    """Return whether a transaction is valid and a list of validation errors."""
     if not isinstance(transaction, dict):
-        return False, ["Transaction must be a dictionary."]
+        return False, ["Transaction must be a dictionary"]
 
-    # Check for required fields
+    errors = []
+
     for field in REQUIRED_FIELDS:
         value = transaction.get(field)
         if value is None or value == "":
-            errors.append(f"{field} is required.")
-        elif isinstance(value, str) and not value.strip() == "":
-            errors.append(f"{field} cannot be empty or whitespace.")
+            errors.append(f"{field} is required")
+        elif isinstance(value, str) and not value.strip():
+            errors.append(f"{field} cannot be empty or whitespace")
 
-    # validate id and description fields
-    for field in ["transaction_id", "customer_id", "merchant", "city", "device"]:
+    for field in STRING_FIELDS:
         value = transaction.get(field)
         if value is not None and not isinstance(value, str):
-            errors.append(f"{field} must be a string.")
+            errors.append(f"{field} must be a string")
 
-    # validate amount field
     amount = transaction.get("amount")
-    if (isinstance (amount,bool) or not isinstance (amount, (int, float))) or not math.isfinite(amount) or amount <= 0:
-        errors.append("amount must be a finite number.")
-
-    # validate timestamp field
-    timestamp = transaction.get("timestamp")
-    if not isinstance(timestamp, str):
-        errors.append("timestamp must be a ISO datetime text")
+    if isinstance(amount, bool) or not isinstance(amount, (int, float)):
+        errors.append("amount must be a finite non-negative number")
     else:
         try:
-            parsed=datetime.fromisoformat(timestamp)
-            if parsed.tzinfo is None:
-                errors.append("Time stamp must be ISO timestamp")
+            finite_amount = math.isfinite(amount)
+        except OverflowError:
+            finite_amount = False
+        if not finite_amount or amount < 0:
+            errors.append("amount must be a finite non-negative number")
+
+    timestamp = transaction.get("timestamp")
+    if not isinstance(timestamp, str):
+        errors.append("timestamp must be an ISO datetime string")
+    else:
+        try:
+            parsed = datetime.fromisoformat(timestamp)
+            if parsed.tzinfo is None or parsed.utcoffset() is None:
+                errors.append("timestamp must include a timezone")
         except ValueError:
-            errors.append("timestamp must be a valid ISO datetime string.")
-    return len(errors) == 0, errors
+            errors.append("timestamp has an invalid format")
+
+    return not errors, errors

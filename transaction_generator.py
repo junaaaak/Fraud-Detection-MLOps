@@ -1,6 +1,6 @@
 import random
 import uuid
-from datetime import datetime, time, timezone
+from datetime import datetime, timezone
 import time
 
 customer=["CUST101","CUST102","CUST103","CUST104","CUST105"]

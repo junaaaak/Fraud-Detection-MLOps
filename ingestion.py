@@ -1,27 +1,120 @@
+
 import sqlite3
+import json
 import time
+from datetime import datetime, timezone
 
-from database import db_path, create_database
+from database import DB_PATH, create_database
 from transaction_generator import generate_transaction
+from validator import validate_transaction
+from feature_engineering import calculate_features
 
-create_database()
-while True:
-    transaction = generate_transaction()
-    with sqlite3.connect(db_path) as conn:
-            conn.execute(
-                "INSERT INTO transactions (transaction_id, customer_id, merchant, amount, city, device, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (
-                    transaction["transaction_id"],
-                    transaction["customer_id"],
-                    transaction["merchant"],
-                    transaction["amount"],
-                    transaction["city"],
-                    transaction["device"],
-                    transaction["timestamp"],
-                ),
+def quarantine(conn, transaction, reasons):
+
+    conn.execute("""
+        INSERT INTO quarantine_transactions
+        (transaction_id, raw_data, rejection_reason, rejected_at)
+        VALUES (?, ?, ?, ?)
+    """, (
+        str(transaction.get("transaction_id", "")),
+        json.dumps(transaction, default=str),
+        "; ".join(reasons),
+        datetime.now(timezone.utc).isoformat()
+    ))
+
+
+def process_transaction(transaction):
+
+    is_valid, errors = validate_transaction(transaction)
+
+    with sqlite3.connect(DB_PATH) as conn:
+
+        if not is_valid:
+            quarantine(conn, transaction, errors)
+            print("REJECTED:", errors)
+            return "REJECTED"
+
+        try:
+            # SAVEPOINT allows us to recover from a
+            # duplicate without losing the quarantine insert.
+            conn.execute("SAVEPOINT insert_transaction")
+            features = calculate_features(conn, transaction)
+
+            conn.execute("""
+                INSERT INTO transactions
+                (transaction_id, customer_id, amount,
+                 merchant, city, device, timestamp)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, (
+                transaction["transaction_id"],
+                transaction["customer_id"],
+                transaction["amount"],
+                transaction["merchant"],
+                transaction["city"],
+                transaction["device"],
+                transaction["timestamp"]
+            ))
+
+            conn.execute("""
+                INSERT INTO transaction_features (
+                    transaction_id,
+                    customer_id,
+                    amount,
+                    txn_count_5m,
+                    amount_sum_1h,
+                    avg_prior_amount,
+                    amount_ratio,
+                    city_changed,
+                    feature_timestamp
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                features["transaction_id"],
+                features["customer_id"],
+                features["amount"],
+                features["txn_count_5m"],
+                features["amount_sum_1h"],
+                features["avg_prior_amount"],
+                features["amount_ratio"],
+                features["city_changed"],
+                features["feature_timestamp"]
+            ))
+
+
+            conn.execute("RELEASE SAVEPOINT insert_transaction")
+
+        except sqlite3.IntegrityError:
+            conn.execute("ROLLBACK TO SAVEPOINT insert_transaction")
+            conn.execute("RELEASE SAVEPOINT insert_transaction")
+
+            quarantine(
+                conn,
+                transaction,
+                ["Duplicate transaction ID"]
             )
-    print(f"Saved {transaction['customer_id']}",
-          f"| amount: {transaction['amount']}",
-          f"| merchant: {transaction['merchant']}",)
 
-    time.sleep(2)  # Sleep for 2 seconds before generating the next transaction
+            print("DUPLICATE:", transaction["transaction_id"])
+            return "DUPLICATE"
+
+    print(
+        f"ACCEPTED: {transaction['customer_id']} "
+        f"| ₹{transaction['amount']:.2f}"
+    )
+
+    return "ACCEPTED"
+
+
+if __name__ == "__main__":
+
+    create_database()
+
+    print("Data quality ingestion service started")
+
+    try:
+        while True:
+            transaction = generate_transaction()
+            process_transaction(transaction)
+            time.sleep(2)
+
+    except KeyboardInterrupt:
+        print("\nIngestion service stopped")
