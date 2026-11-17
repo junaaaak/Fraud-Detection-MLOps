@@ -1,1 +1,5 @@
 pandas
+numpy
+sqlite3
+joblib
+scikit-learn
