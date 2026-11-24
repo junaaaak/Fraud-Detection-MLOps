@@ -1,8 +1,9 @@
+import sqlite3
 import pandas as pd
 from database import DB_PATH
-import sqlite3
 
 with sqlite3.connect(DB_PATH) as conn:
-    df = pd.read_sql_query("SELECT * FROM transactions", conn)
+    df = pd.read_sql_query("" \
+    "SELECT * FROM transactions ORDER BY timestamp DESC", conn)
 
-print(df.head(10)) # Display the first 10 rows of the transactions table
+print(df.head(10))

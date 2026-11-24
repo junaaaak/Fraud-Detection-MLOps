@@ -50,10 +50,13 @@ Path("models").mkdir(parents=True, exist_ok=True)
 artifact = {
     "model": model,
     "features": FEATURES,
-    "version": "v1.0"
+    "version": "v1.0",
+    "threshold": 0.65
 }
 
-joblib.dump(artifact, "models/fraud_detection_model.pkl")
+MODEL_PATHS = ["models/fraud_detection_model.pkl", "models/fraud_model_v1.joblib"]
+for path in MODEL_PATHS:
+    joblib.dump(artifact, path)
 
 print("Model training completed.")
-print ("Model saved to 'models/fraud_detection_model.pkl'")
+print(f"Model saved to: {', '.join(MODEL_PATHS)}")
