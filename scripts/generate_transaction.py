@@ -1,6 +1,6 @@
 import numpy as np
 import pandas as pd
-from pathlib import Path
+from src.config import DATA_DIR, TRANSACTIONS_CSV
 
 rng = np.random.default_rng(42)
 
@@ -41,10 +41,10 @@ df = pd.DataFrame({
     "fraud_label": fraud_label
 })
 
-Path("data").mkdir(parents=True, exist_ok=True)
-df.to_csv("data/transactions.csv", index=False)
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+df.to_csv(TRANSACTIONS_CSV, index=False)
 
-print("Synthetic transaction data generated and saved to 'data/transactions.csv'")
+print(f"Synthetic transaction data generated and saved to '{TRANSACTIONS_CSV}'")
 print("Total transactions:", len(df))
 print("Fraudulent transactions:", df["fraud_label"].sum())
 print("Sample of generated data:")

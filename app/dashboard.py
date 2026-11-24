@@ -1,20 +1,36 @@
-﻿"""
+"""
 Live fraud monitoring dashboard.
 
 Run with:
-    streamlit run dashboard.py
+    streamlit run app/dashboard.py
 
 Reads from the same SQLite database that ingestion.py writes to,
 using a read-only connection so it never blocks the pipeline.
 """
 
 import sqlite3
+import sys
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import pandas as pd
 import streamlit as st
 
-from database import DB_PATH
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from src.database import DB_PATH  # noqa: E402
+
+# All timestamps are stored in UTC; display them in the machine's
+# local timezone so tables, charts and "Last updated" agree.
+LOCAL_TZ = datetime.now().astimezone().tzinfo
+
+# If no prediction has been written for this long, the ingestion
+# service is probably not running.
+STALE_AFTER = timedelta(seconds=30)
+
+# Window start is floored to this many seconds so the cache key stays
+# stable between reruns instead of changing every microsecond.
+WINDOW_GRANULARITY_SECONDS = 10
 
 
 # ----------------------------------------
@@ -88,8 +104,37 @@ def load_transactions(since_iso):
     if not df.empty:
         df["predicted_at"] = pd.to_datetime(
             df["predicted_at"], utc=True, format="ISO8601"
-        )
+        ).dt.tz_convert(LOCAL_TZ)
     return df
+
+
+@st.cache_data(ttl=2, show_spinner=False)
+def load_pipeline_status(since_iso):
+    """Latest prediction time overall, and accepted transactions in the
+    window that have no prediction (e.g. ingested before the model)."""
+
+    with get_connection() as conn:
+        if not table_exists(conn, "fraud_predictions"):
+            return None, 0
+
+        last_prediction = conn.execute(
+            "SELECT MAX(predicted_at) FROM fraud_predictions"
+        ).fetchone()[0]
+
+        unscored = conn.execute("""
+            SELECT COUNT(*)
+            FROM transactions t
+            LEFT JOIN fraud_predictions p
+                ON p.transaction_id = t.transaction_id
+            WHERE p.transaction_id IS NULL
+              AND t.timestamp >= ?
+        """, (since_iso,)).fetchone()[0]
+
+    if last_prediction is not None:
+        last_prediction = pd.to_datetime(
+            last_prediction, utc=True, format="ISO8601"
+        ).tz_convert(LOCAL_TZ)
+    return last_prediction, unscored
 
 
 @st.cache_data(ttl=2, show_spinner=False)
@@ -108,7 +153,7 @@ def load_quarantine(since_iso):
     if not df.empty:
         df["rejected_at"] = pd.to_datetime(
             df["rejected_at"], utc=True, format="ISO8601"
-        )
+        ).dt.tz_convert(LOCAL_TZ)
     return df
 
 
@@ -144,7 +189,39 @@ def window_start_iso():
     delta = TIME_WINDOWS[window_label]
     if delta is None:
         return "0000"  # sorts before every ISO timestamp
-    return (datetime.now(timezone.utc) - delta).isoformat()
+    start = datetime.now(timezone.utc) - delta
+    start -= timedelta(
+        seconds=start.second % WINDOW_GRANULARITY_SECONDS,
+        microseconds=start.microsecond,
+    )
+    return start.isoformat()
+
+
+def render_pipeline_status(last_prediction):
+    now = datetime.now(LOCAL_TZ)
+
+    if last_prediction is None:
+        st.warning(
+            "No predictions have been written yet. Start the pipeline "
+            "with `python -m src.ingestion`."
+        )
+        return
+
+    age = now - last_prediction
+    if age > STALE_AFTER:
+        minutes = int(age.total_seconds() // 60)
+        ago = f"{minutes} min ago" if minutes else f"{int(age.total_seconds())}s ago"
+        st.warning(
+            f"⏸️ Ingestion appears to be stopped: the last prediction was at "
+            f"{last_prediction:%Y-%m-%d %H:%M:%S} ({ago}). The dashboard is "
+            f"refreshing, but no new data is arriving. Start it with "
+            f"`python -m src.ingestion`."
+        )
+    else:
+        st.caption(
+            f"🟢 Pipeline live · last prediction "
+            f"{last_prediction:%H:%M:%S}"
+        )
 
 
 # ----------------------------------------
@@ -364,7 +441,7 @@ def live_dashboard():
     if not DB_PATH.exists():
         st.warning(
             "No database found yet. Start the pipeline with "
-            "`python ingestion.py`."
+            "`python -m src.ingestion`."
         )
         return
 
@@ -373,16 +450,27 @@ def live_dashboard():
     try:
         txns = load_transactions(since)
         quarantine = load_quarantine(since)
+        last_prediction, unscored = load_pipeline_status(since)
     except sqlite3.OperationalError as error:
         st.error(f"Could not read the database: {error}")
         return
 
+    render_pipeline_status(last_prediction)
+
     st.caption(
         f"Window: {window_label} · Last updated "
-        f"{datetime.now().strftime('%H:%M:%S')}"
+        f"{datetime.now(LOCAL_TZ):%H:%M:%S} · Times shown in "
+        f"{datetime.now(LOCAL_TZ):%Z}"
     )
 
     render_kpis(txns, quarantine)
+
+    if unscored:
+        st.caption(
+            f"ℹ️ {unscored:,} accepted transactions in this window have no "
+            f"fraud prediction (ingested before the model was added) and "
+            f"are not included above."
+        )
 
     if txns.empty:
         st.info(

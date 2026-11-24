@@ -1,7 +1,5 @@
 import sqlite3
-from pathlib import Path
-
-DB_PATH = Path(__file__).parent / "data" / "database.db"
+from src.config import DB_PATH
 
 def create_database():
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)

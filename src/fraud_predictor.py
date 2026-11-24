@@ -2,10 +2,7 @@ import joblib
 import pandas as pd
 
 from functools import lru_cache
-from pathlib import Path
-
-MODEL_PATH = (Path(__file__).resolve().parent
-    / "models"/"fraud_model_v1.joblib")
+from src.config import MODEL_PATH
 
 @lru_cache(maxsize=1)
 def load_model():
