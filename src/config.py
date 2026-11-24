@@ -6,5 +6,5 @@ DATA_DIR = PROJECT_ROOT / "data"
 MODELS_DIR = PROJECT_ROOT / "models"
 
 DB_PATH = DATA_DIR / "database.db"
-TRANSACTIONS_CSV = DATA_DIR / "transactions.csv"
-MODEL_PATH = MODELS_DIR / "fraud_model_v1.joblib"
+TRAINING_CSV = DATA_DIR / "training_data.csv"
+MODEL_PATH = MODELS_DIR / "fraud_model.joblib"

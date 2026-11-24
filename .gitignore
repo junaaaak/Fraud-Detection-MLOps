@@ -219,5 +219,10 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 
-# Local SQLite database (generated at runtime)
-data/database.db
+# Local SQLite databases, backups and WAL sidecar files (generated at runtime)
+data/*.db
+data/*.db-wal
+data/*.db-shm
+
+# Local virtualenv
+mlenv/

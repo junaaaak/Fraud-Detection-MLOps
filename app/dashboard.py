@@ -18,7 +18,7 @@ import streamlit as st
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from src.database import DB_PATH  # noqa: E402
+from src.database import DB_PATH, to_utc_iso  # noqa: E402
 
 # All timestamps are stored in UTC; display them in the machine's
 # local timezone so tables, charts and "Last updated" agree.
@@ -66,15 +66,43 @@ def table_exists(conn, name):
     return row is not None
 
 
+@st.cache_data(ttl=10, show_spinner=False)
+def load_model_versions():
+    """Model versions with predictions, most recently used first."""
+
+    if not DB_PATH.exists():
+        return []
+    with get_connection() as conn:
+        if not table_exists(conn, "fraud_predictions"):
+            return []
+        rows = conn.execute("""
+            SELECT model_version
+            FROM fraud_predictions
+            GROUP BY model_version
+            ORDER BY MAX(predicted_at) DESC
+        """).fetchall()
+    return [row[0] for row in rows]
+
+
 @st.cache_data(ttl=2, show_spinner=False)
-def load_transactions(since_iso):
-    """Accepted transactions joined with their features and predictions."""
+def load_transactions(since_iso, model_version):
+    """Accepted transactions joined with their features, predictions and
+    (when available) simulator ground-truth labels."""
 
     with get_connection() as conn:
         if not table_exists(conn, "fraud_predictions"):
             return pd.DataFrame()
 
-        df = pd.read_sql_query("""
+        if table_exists(conn, "transaction_labels"):
+            label_select = "l.is_fraud"
+            label_join = (
+                "LEFT JOIN transaction_labels l "
+                "ON l.transaction_id = t.transaction_id"
+            )
+        else:
+            label_select, label_join = "NULL AS is_fraud", ""
+
+        df = pd.read_sql_query(f"""
             SELECT
                 t.transaction_id,
                 t.customer_id,
@@ -91,15 +119,18 @@ def load_transactions(since_iso):
                 p.fraud_score,
                 p.is_suspicious,
                 p.model_version,
-                p.predicted_at
+                p.predicted_at,
+                {label_select}
             FROM transactions t
             JOIN fraud_predictions p
                 ON p.transaction_id = t.transaction_id
             LEFT JOIN transaction_features f
                 ON f.transaction_id = t.transaction_id
+            {label_join}
             WHERE p.predicted_at >= ?
+              AND (? IS NULL OR p.model_version = ?)
             ORDER BY p.predicted_at DESC
-        """, conn, params=(since_iso,))
+        """, conn, params=(since_iso, model_version, model_version))
 
     if not df.empty:
         df["predicted_at"] = pd.to_datetime(
@@ -176,6 +207,17 @@ with st.sidebar:
         "Time window", list(TIME_WINDOWS), index=1
     )
 
+    ALL_VERSIONS = "All versions"
+    versions = load_model_versions()
+    version_choice = st.selectbox(
+        "Model version",
+        versions + [ALL_VERSIONS],
+        index=0,
+        help="Defaults to the most recently used model, so older "
+             "models' predictions don't skew the numbers.",
+    )
+    model_version = None if version_choice in (ALL_VERSIONS, None) else version_choice
+
     live = st.toggle("Live refresh", value=True)
     refresh_seconds = st.slider(
         "Refresh every (seconds)", 2, 30, 5, disabled=not live
@@ -194,7 +236,7 @@ def window_start_iso():
         seconds=start.second % WINDOW_GRANULARITY_SECONDS,
         microseconds=start.microsecond,
     )
-    return start.isoformat()
+    return to_utc_iso(start)
 
 
 def render_pipeline_status(last_prediction):
@@ -246,6 +288,40 @@ def render_kpis(txns, quarantine):
     cols[4].metric("Quarantined", f"{len(quarantine):,}")
 
     st.caption(f"Average fraud score: {avg_score:.3f}")
+
+    render_model_quality(txns)
+
+
+def render_model_quality(txns):
+    """Live precision / recall against the simulator's ground truth."""
+
+    if txns.empty or "is_fraud" not in txns:
+        return
+    labelled = txns.dropna(subset=["is_fraud"])
+    if labelled.empty:
+        return
+
+    actual = labelled["is_fraud"].astype(int)
+    flagged = labelled["is_suspicious"].astype(int)
+    true_pos = int(((actual == 1) & (flagged == 1)).sum())
+    precision = true_pos / flagged.sum() if flagged.sum() else None
+    recall = true_pos / actual.sum() if actual.sum() else None
+
+    def pct(value):
+        return "–" if value is None else f"{value:.1%}"
+
+    st.markdown("**Model quality** (vs. simulator ground truth)")
+    cols = st.columns(4)
+    cols[0].metric("Labelled transactions", f"{len(labelled):,}")
+    cols[1].metric("Actual fraud rate", pct(actual.mean()))
+    cols[2].metric(
+        "Precision", pct(precision),
+        help="Of the transactions flagged, how many were really fraud.",
+    )
+    cols[3].metric(
+        "Recall", pct(recall),
+        help="Of the real frauds, how many were flagged.",
+    )
 
 
 def render_trends(txns):
@@ -448,7 +524,7 @@ def live_dashboard():
     since = window_start_iso()
 
     try:
-        txns = load_transactions(since)
+        txns = load_transactions(since, model_version)
         quarantine = load_quarantine(since)
         last_prediction, unscored = load_pipeline_status(since)
     except sqlite3.OperationalError as error:

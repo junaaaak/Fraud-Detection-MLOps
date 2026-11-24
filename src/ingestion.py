@@ -1,14 +1,21 @@
-
-import sqlite3
 import json
+import sqlite3
 import time
-from datetime import datetime, timezone
 
-from src.database import DB_PATH, create_database
-from src.transaction_generator import generate_transaction
-from src.validator import validate_transaction
+from src.database import (
+    DB_PATH,
+    create_database,
+    insert_features,
+    insert_label,
+    insert_prediction,
+    insert_transaction,
+    to_utc_iso,
+    utc_now_iso,
+)
 from src.feature_engineering import calculate_features
-from src.fraud_predictor import predict_fraud
+from src.fraud_predictor import load_model, predict_fraud
+from src.transaction_generator import EVENT_INTERVAL_SECONDS, TransactionSimulator
+from src.validator import validate_transaction
 
 
 # ----------------------------------------
@@ -16,21 +23,20 @@ from src.fraud_predictor import predict_fraud
 # ----------------------------------------
 
 def quarantine(conn, transaction, reasons):
-
+    transaction_id = (
+        transaction.get("transaction_id", "")
+        if isinstance(transaction, dict)
+        else ""
+    )
     conn.execute("""
         INSERT INTO quarantine_transactions
-        (
-            transaction_id,
-            raw_data,
-            rejection_reason,
-            rejected_at
-        )
+        (transaction_id, raw_data, rejection_reason, rejected_at)
         VALUES (?, ?, ?, ?)
     """, (
-        str(transaction.get("transaction_id", "")),
+        str(transaction_id),
         json.dumps(transaction, default=str),
         "; ".join(reasons),
-        datetime.now(timezone.utc).isoformat()
+        utc_now_iso(),
     ))
 
 
@@ -38,158 +44,98 @@ def quarantine(conn, transaction, reasons):
 # 2. PROCESS EACH TRANSACTION
 # ----------------------------------------
 
-def process_transaction(transaction):
+def _store(conn, transaction, is_fraud):
+    """STEP 3: Generate features, predict and store atomically.
+    Returns (status, prediction)."""
+
+    try:
+        conn.execute("SAVEPOINT insert_transaction")
+
+        features = calculate_features(conn, transaction)
+        prediction = predict_fraud(features)
+
+        insert_transaction(conn, transaction)
+        insert_features(conn, features)
+        insert_prediction(conn, transaction["transaction_id"], prediction)
+        if is_fraud is not None:
+            insert_label(conn, transaction["transaction_id"], is_fraud)
+
+        conn.execute("RELEASE SAVEPOINT insert_transaction")
+        return "ACCEPTED", prediction
+
+    except sqlite3.IntegrityError:
+        conn.execute("ROLLBACK TO SAVEPOINT insert_transaction")
+        conn.execute("RELEASE SAVEPOINT insert_transaction")
+
+        # Only classify confirmed transaction ID collisions as duplicates.
+        existing = conn.execute(
+            "SELECT 1 FROM transactions WHERE transaction_id = ?",
+            (transaction["transaction_id"],),
+        ).fetchone()
+        if existing is None:
+            raise
+
+        quarantine(conn, transaction, ["Duplicate transaction ID"])
+        return "DUPLICATE", None
+
+
+def process_transaction(transaction, db_path=DB_PATH, is_fraud=None):
+    """Validate, featurise, score and store one transaction.
+
+    `is_fraud` is the simulator's ground-truth label. It is stored
+    separately so live model quality can be measured; it is never
+    shown to the model.
+
+    Returns "ACCEPTED", "REJECTED" or "DUPLICATE".
+    """
 
     # STEP 1: Validate incoming transaction
     is_valid, errors = validate_transaction(transaction)
 
-    with sqlite3.connect(DB_PATH, timeout=10) as conn:
+    conn = sqlite3.connect(db_path, timeout=10)
+    try:
+        with conn:  # commits on success, rolls back on error
+            if not is_valid:
+                # STEP 2: Quarantine invalid data
+                quarantine(conn, transaction, errors)
+                status = "REJECTED"
+            else:
+                # Store timestamps in one fixed UTC format so they can be
+                # compared and indexed as text.
+                transaction = {
+                    **transaction,
+                    "timestamp": to_utc_iso(transaction["timestamp"]),
+                }
+                status, prediction = _store(conn, transaction, is_fraud)
+    finally:
+        conn.close()
 
-        # STEP 2: Quarantine invalid data
-        if not is_valid:
-            quarantine(conn, transaction, errors)
+    if status == "REJECTED":
+        txn_id = (
+            transaction.get("transaction_id")
+            if isinstance(transaction, dict)
+            else None
+        )
+        print(f"REJECTED | Transaction: {txn_id} | Reason: {errors}", flush=True)
+        return status
 
-            print(
-                f"REJECTED | "
-                f"Transaction: {transaction.get('transaction_id')} | "
-                f"Reason: {errors}",
-                flush=True
-            )
+    if status == "DUPLICATE":
+        print(
+            f"DUPLICATE | Transaction: {transaction['transaction_id']}",
+            flush=True,
+        )
+        return status
 
-            return "REJECTED"
-
-        # STEP 3: Generate features, predict,
-        # and store the results atomically.
-        try:
-            conn.execute("SAVEPOINT insert_transaction")
-
-            # Calculate behavioural features
-            # using previous customer transactions.
-            features = calculate_features(conn, transaction)
-
-            # Predict fraud risk using trained model.
-            prediction = predict_fraud(features)
-
-            # STEP 4: Save accepted transaction
-            conn.execute("""
-                INSERT INTO transactions
-                (
-                    transaction_id,
-                    customer_id,
-                    amount,
-                    merchant,
-                    city,
-                    device,
-                    timestamp
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-            """, (
-                transaction["transaction_id"],
-                transaction["customer_id"],
-                transaction["amount"],
-                transaction["merchant"],
-                transaction["city"],
-                transaction["device"],
-                transaction["timestamp"]
-            ))
-
-            # STEP 5: Save engineered features
-            conn.execute("""
-                INSERT INTO transaction_features
-                (
-                    transaction_id,
-                    customer_id,
-                    amount,
-                    txn_count_5m,
-                    amount_sum_1h,
-                    avg_prior_amount,
-                    amount_ratio,
-                    city_changed,
-                    feature_timestamp
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (
-                features["transaction_id"],
-                features["customer_id"],
-                features["amount"],
-                features["txn_count_5m"],
-                features["amount_sum_1h"],
-                features["avg_prior_amount"],
-                features["amount_ratio"],
-                features["city_changed"],
-                features["feature_timestamp"]
-            ))
-
-            # STEP 6: Save model prediction
-            conn.execute("""
-                INSERT INTO fraud_predictions
-                (
-                    transaction_id,
-                    fraud_score,
-                    is_suspicious,
-                    model_version,
-                    predicted_at
-                )
-                VALUES (?, ?, ?, ?, ?)
-            """, (
-                transaction["transaction_id"],
-                prediction["fraud_score"],
-                prediction["is_suspicious"],
-                prediction["model_version"],
-                datetime.now(timezone.utc).isoformat()
-            ))
-
-            conn.execute("RELEASE SAVEPOINT insert_transaction")
-
-        except sqlite3.IntegrityError as error:
-
-            conn.execute("ROLLBACK TO SAVEPOINT insert_transaction")
-            conn.execute("RELEASE SAVEPOINT insert_transaction")
-
-            # Only classify confirmed transaction ID
-            # collisions as duplicates.
-            existing = conn.execute("""
-                SELECT 1 FROM transactions
-                WHERE transaction_id = ?
-            """, (
-                transaction["transaction_id"],
-            )).fetchone()
-
-            if existing is None:
-                raise
-
-            quarantine(
-                conn,
-                transaction,
-                ["Duplicate transaction ID"]
-            )
-
-            print(
-                f"DUPLICATE | "
-                f"Transaction: {transaction['transaction_id']}",
-                flush=True
-            )
-
-            return "DUPLICATE"
-
-    # STEP 7: Display successful prediction
-    score = prediction["fraud_score"]
-
-    status = (
-        "SUSPICIOUS"
-        if prediction["is_suspicious"] == 1
-        else "NORMAL"
-    )
-
+    # STEP 4: Display successful prediction
+    status = "SUSPICIOUS" if prediction["is_suspicious"] == 1 else "NORMAL"
     print(
         f"{status} | "
         f"Customer: {transaction['customer_id']} | "
         f"Amount: ₹{transaction['amount']:.2f} | "
-        f"Fraud Score: {score:.3f} | "
+        f"Fraud Score: {prediction['fraud_score']:.3f} | "
         f"Model: {prediction['model_version']}",
-        flush=True
+        flush=True,
     )
-
     return "ACCEPTED"
 
 
@@ -198,18 +144,14 @@ def process_transaction(transaction):
 # ----------------------------------------
 
 def main():
-
-    # Ensure required SQLite tables exist.
     create_database()
 
     # Ensure model exists before accepting events.
-    from src.fraud_predictor import load_model
     load_model()
 
     print("=" * 65)
     print("BANKING FRAUD DETECTION - LIVE MLOPS PIPELINE")
     print("=" * 65)
-
     print("Transaction Generator : ACTIVE")
     print("Data Validation       : ACTIVE")
     print("Feature Engineering   : ACTIVE")
@@ -218,15 +160,13 @@ def main():
     print("Dashboard             : Run separately")
     print("-" * 65)
 
+    simulator = TransactionSimulator()
+
     try:
         while True:
-
-            transaction = generate_transaction()
-
-            process_transaction(transaction)
-
-            time.sleep(2)
-
+            transaction, is_fraud = simulator.next()
+            process_transaction(transaction, is_fraud=is_fraud)
+            time.sleep(EVENT_INTERVAL_SECONDS)
     except KeyboardInterrupt:
         print("\nIngestion service stopped by user.")
 

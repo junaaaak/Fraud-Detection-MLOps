@@ -1,27 +1,83 @@
-from src.transaction_generator import generate_transaction
-from src.ingestion import process_transaction
-from src.database import create_database
+import math
 
-create_database()
+import pytest
 
-#case 1: valid transaction
-transaction = generate_transaction()
-print("Generated transaction:", transaction)
-process_transaction(transaction)
+from src.validator import REQUIRED_FIELDS, validate_transaction
 
-#case 2: invalid transaction (negative amount)
-negative = generate_transaction()
-negative["amount"] = -100.0
-print("Generated transaction with negative amount:", negative)
-process_transaction(negative)
 
-#case 3 : missing required field (customer_id)
-missing_field = generate_transaction()
-missing_field["customer_id"] = "None"
-process_transaction(missing_field)
+def test_valid_transaction_passes(make_transaction):
+    assert validate_transaction(make_transaction()) == (True, [])
 
-#case 4: duplicate transaction_id
-duplicate = generate_transaction()
-duplicate["transaction_id"] = transaction["transaction_id"]
-print("Generated transaction with duplicate transaction_id:", duplicate)
-process_transaction(duplicate)
+
+def test_non_dict_is_rejected():
+    is_valid, errors = validate_transaction("not a dict")
+    assert not is_valid
+    assert errors == ["Transaction must be a dictionary"]
+
+
+@pytest.mark.parametrize("field", REQUIRED_FIELDS)
+def test_every_required_field_is_checked(make_transaction, field):
+    transaction = make_transaction()
+    del transaction[field]
+
+    is_valid, errors = validate_transaction(transaction)
+
+    assert not is_valid
+    assert errors == [f"{field} is required"]
+
+
+@pytest.mark.parametrize("field", ["customer_id", "merchant", "city", "device"])
+def test_whitespace_strings_are_rejected(make_transaction, field):
+    is_valid, errors = validate_transaction(make_transaction(**{field: "   "}))
+    assert not is_valid
+    assert errors == [f"{field} cannot be empty or whitespace"]
+
+
+@pytest.mark.parametrize("field", ["transaction_id", "customer_id", "city"])
+def test_non_string_fields_are_rejected(make_transaction, field):
+    is_valid, errors = validate_transaction(make_transaction(**{field: 123}))
+    assert not is_valid
+    assert errors == [f"{field} must be a string"]
+
+
+@pytest.mark.parametrize(
+    "amount", [-100.0, 0, math.nan, math.inf, True, "500"]
+)
+def test_invalid_amounts_are_rejected(make_transaction, amount):
+    is_valid, errors = validate_transaction(make_transaction(amount=amount))
+    assert not is_valid
+    assert errors == ["amount must be a finite positive number"]
+
+
+@pytest.mark.parametrize("amount", [0.01, 1, 49999.99])
+def test_valid_amounts_pass(make_transaction, amount):
+    assert validate_transaction(make_transaction(amount=amount))[0]
+
+
+@pytest.mark.parametrize("timestamp, error", [
+    ("2026-11-24T10:00:00", "timestamp must include a timezone"),
+    ("yesterday", "timestamp has an invalid format"),
+    (1732440000, "timestamp must be ISO datetime text"),
+])
+def test_invalid_timestamps_are_rejected(make_transaction, timestamp, error):
+    is_valid, errors = validate_transaction(make_transaction(timestamp=timestamp))
+    assert not is_valid
+    assert errors == [error]
+
+
+def test_non_utc_offset_is_accepted(make_transaction):
+    transaction = make_transaction(timestamp="2026-11-24T15:30:00+05:30")
+    assert validate_transaction(transaction)[0]
+
+
+def test_multiple_problems_are_all_reported(make_transaction):
+    transaction = make_transaction(amount=-5)
+    del transaction["customer_id"]
+
+    is_valid, errors = validate_transaction(transaction)
+
+    assert not is_valid
+    assert set(errors) == {
+        "customer_id is required",
+        "amount must be a finite positive number",
+    }

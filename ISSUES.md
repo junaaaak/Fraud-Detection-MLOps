@@ -71,6 +71,15 @@ or not math.isfinite(amount) and amount < 0
 
 ## 3. Training data does not match live data (critical) — *verified*
 
+> **Status: fixed.**
+> - A new `TransactionSimulator` covers 200 customer profiles and injects labelled fraud episodes (amount spikes, new cities, bursts).
+> - `scripts/generate_training_data.py` replays that simulator through the same `calculate_features` code.
+> - The model is split by time, and the threshold is tuned for F1 on the validation set.
+> - Ground-truth labels are stored in `transaction_labels`, and the dashboard shows live precision and recall.
+> - There is now a single model artifact.
+>
+> Model v2.0 test set: ROC-AUC 0.97, precision 0.94, recall 0.67, 3.6% flagged against a 5% true fraud rate.
+
 | Feature | Training data | Live data (from DB) |
 |---|---|---|
 | `txn_count_5m` | Poisson(5) | mean 22, max 42 |
@@ -94,6 +103,12 @@ or not math.isfinite(amount) and amount < 0
 
 ## 4. Database and performance
 
+> **Status: fixed.**
+> - Indexes added, and timestamps normalised to a fixed UTC format, so feature queries compare strings and use the index.
+> - WAL mode enabled.
+> - A schema mismatch now raises `SchemaMismatchError` instead of dropping the table.
+> - Transaction IDs are full 128-bit UUIDs.
+
 - **No indexes.** `transactions(customer_id, timestamp)` and `fraud_predictions(predicted_at)` are not indexed.
   - Each ingested transaction runs 3 full scans with `julianday()` on every row.
   - Each dashboard refresh scans all predictions.
@@ -106,6 +121,11 @@ or not math.isfinite(amount) and amount < 0
 
 ## 5. Tests
 
+> **Status: fixed.**
+> - 47 pytest tests across the validator, features, ingestion, schema and simulator.
+> - Every test uses a temporary database.
+> - Run them with `python -m pytest`.
+
 - Files in `tests/` are demo scripts. They have no asserts and pytest does not collect them.
 - They **write into the real `data/database.db`**. That is where the `DEMO_*` customers with back-dated timestamps come from.
 - `test_validator` case 3 sets `customer_id = "None"` (a string), so it does not test a missing field.
@@ -116,6 +136,11 @@ or not math.isfinite(amount) and amount < 0
 ---
 
 ## 6. Minor
+
+> **Status: fixed.**
+> - Requirements are pinned to the `mlenv` versions.
+> - The simulator's `__main__` prints sample transactions.
+> - Merchant and city names are consistent.
 
 - `requirements.txt` has no pinned versions. `st.fragment(run_every=...)` and `width="stretch"` need a recent Streamlit.
 - `transaction_generator.py` `__main__` generates a transaction, sleeps, and never prints it.
