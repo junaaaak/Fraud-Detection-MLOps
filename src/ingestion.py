@@ -4,11 +4,11 @@ import json
 import time
 from datetime import datetime, timezone
 
-from database import DB_PATH, create_database
-from transaction_generator import generate_transaction
-from validator import validate_transaction
-from feature_engineering import calculate_features
-from fraud_predictor import predict_fraud
+from src.database import DB_PATH, create_database
+from src.transaction_generator import generate_transaction
+from src.validator import validate_transaction
+from src.feature_engineering import calculate_features
+from src.fraud_predictor import predict_fraud
 
 
 # ----------------------------------------
@@ -203,7 +203,7 @@ def main():
     create_database()
 
     # Ensure model exists before accepting events.
-    from fraud_predictor import load_model
+    from src.fraud_predictor import load_model
     load_model()
 
     print("=" * 65)

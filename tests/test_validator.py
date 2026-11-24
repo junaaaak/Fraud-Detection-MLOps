@@ -1,6 +1,6 @@
-from transaction_generator import generate_transaction
-from ingestion import process_transaction
-from database import create_database
+from src.transaction_generator import generate_transaction
+from src.ingestion import process_transaction
+from src.database import create_database
 
 create_database()
 

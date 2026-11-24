@@ -1,20 +1,24 @@
-﻿"""
+"""
 Live fraud monitoring dashboard.
 
 Run with:
-    streamlit run dashboard.py
+    streamlit run app/dashboard.py
 
 Reads from the same SQLite database that ingestion.py writes to,
 using a read-only connection so it never blocks the pipeline.
 """
 
 import sqlite3
+import sys
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import pandas as pd
 import streamlit as st
 
-from database import DB_PATH
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from src.database import DB_PATH  # noqa: E402
 
 
 # ----------------------------------------
@@ -364,7 +368,7 @@ def live_dashboard():
     if not DB_PATH.exists():
         st.warning(
             "No database found yet. Start the pipeline with "
-            "`python ingestion.py`."
+            "`python -m src.ingestion`."
         )
         return
 

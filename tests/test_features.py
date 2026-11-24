@@ -3,8 +3,8 @@ import uuid
 import sqlite3
 from datetime import datetime, timedelta, timezone
 
-from database import DB_PATH, create_database
-from ingestion import process_transaction
+from src.database import DB_PATH, create_database
+from src.ingestion import process_transaction
 
 create_database()
 

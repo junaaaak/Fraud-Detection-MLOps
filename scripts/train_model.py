@@ -1,7 +1,7 @@
 import pandas as pd
 import joblib
 
-from pathlib import Path
+from src.config import MODELS_DIR, TRANSACTIONS_CSV
 from sklearn.impute import SimpleImputer
 from sklearn.model_selection import train_test_split
 from sklearn.ensemble import RandomForestClassifier
@@ -9,7 +9,7 @@ from sklearn.pipeline import Pipeline
 from sklearn.metrics import (classification_report, confusion_matrix, roc_auc_score)
 
 
-df = pd.read_csv("data/transactions.csv")
+df = pd.read_csv(TRANSACTIONS_CSV)
 
 FEATURES = [
     "amount",
@@ -45,7 +45,7 @@ print(confusion_matrix(y_test, predictions))
 print("ROC AUC Score:", round(roc_auc_score(y_test, model.predict_proba(X_test)[:, 1]), 4))
 
 #save the model
-Path("models").mkdir(parents=True, exist_ok=True)
+MODELS_DIR.mkdir(parents=True, exist_ok=True)
 
 artifact = {
     "model": model,
@@ -54,9 +54,9 @@ artifact = {
     "threshold": 0.65
 }
 
-MODEL_PATHS = ["models/fraud_detection_model.pkl", "models/fraud_model_v1.joblib"]
+MODEL_PATHS = [MODELS_DIR / "fraud_detection_model.pkl", MODELS_DIR / "fraud_model_v1.joblib"]
 for path in MODEL_PATHS:
     joblib.dump(artifact, path)
 
 print("Model training completed.")
-print(f"Model saved to: {', '.join(MODEL_PATHS)}")
+print(f"Model saved to: {', '.join(str(p) for p in MODEL_PATHS)}")
