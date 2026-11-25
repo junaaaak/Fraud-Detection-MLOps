@@ -70,3 +70,30 @@ python -m pytest                           # run tests
 
 The dashboard only shows new data while `src.ingestion` is running. It
 shows a warning when no prediction has arrived for 30 seconds.
+
+## Data versioning (DVC + DagsHub)
+
+`data/training_data.csv` and `data/snapshots/fraud_features.parquet` are
+tracked by DVC, not Git. Git stores only the small `.dvc` pointer files;
+the data lives on the DagsHub remote
+`https://dagshub.com/junaaaak/Fraud-Detection-MLOps.dvc`.
+
+One-time auth setup (stored in the git-ignored `.dvc/config.local`):
+
+```bash
+dagshub login
+dvc remote modify dagshub --local auth basic
+dvc remote modify dagshub --local user <dagshub-username>
+dvc remote modify dagshub --local ask_password true
+```
+
+Then `dvc pull` to download the data, or `dvc push` after `dvc add`.
+
+Dataset versions are Git tags (`dataset-v1`, `stage-7-data-v1`):
+
+```bash
+git switch --detach stage-7-data-v1   # go to a data version
+dvc checkout
+git switch -                          # back to your branch
+dvc checkout
+```
