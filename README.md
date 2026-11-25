@@ -37,11 +37,12 @@ feature code, so training and serving features match.
 ├── scripts/                 # one-off jobs
 │   ├── generate_training_data.py
 │   ├── train_model.py
+│   ├── export_parquet.py    # snapshot features to data/snapshots/*.parquet
 │   └── view_transaction.py
 ├── app/
 │   └── dashboard.py         # Streamlit monitoring dashboard
 ├── tests/                   # pytest suite (uses temporary databases)
-├── data/                    # training_data.csv, database.db (local only)
+├── data/                    # training_data.csv, database.db (local only), snapshots/
 └── models/                  # trained model artifact
 ```
 
@@ -54,6 +55,7 @@ pip install -r requirements.txt
 
 python -m scripts.generate_training_data   # build training data
 python -m scripts.train_model              # train model + tune threshold
+python -m scripts.export_parquet           # export feature snapshot to Parquet
 
 # In two separate terminals:
 python -m src.ingestion                    # start the live pipeline (run ONE instance)
