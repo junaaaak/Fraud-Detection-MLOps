@@ -4,7 +4,11 @@ Real-time banking fraud detection pipeline: synthetic transactions are validated
 enriched with behavioural features, scored by a trained model and stored in SQLite,
 with a Streamlit dashboard for live monitoring.
 
+![Banking Fraud Detection Monitor dashboard](docs/screenshot.png)
+
 ## How it works
+
+![Project flow](docs/flow.png)
 
 1. **Simulator** (`src/transaction_generator.py`) produces a stream of transactions
    from 200 customers, each with a home city, usual device and typical spend.
@@ -27,6 +31,10 @@ with a Streamlit dashboard for live monitoring.
 Training data is produced by replaying the same simulator through the same
 feature code, so training and serving features match.
 
+**How the model works:** [`docs/model.md`](docs/model.md) covers the
+distributions the simulator uses (and where in the code), the feature
+formulas, the random forest, threshold tuning, and the evaluation metrics.
+Model v2.1 on the held-out test set: precision 0.86, recall 0.80, ROC AUC 0.97.
 
 ## Project structure
 
@@ -47,6 +55,7 @@ feature code, so training and serving features match.
 ├── app/
 │   └── dashboard.py         # Streamlit monitoring dashboard
 ├── tests/                   # pytest suite (uses temporary databases)
+├── docs/                    # model.md, flow diagram, dashboard screenshot
 ├── data/                    # training_data.csv, database.db (local only), snapshots/
 └── models/                  # trained model artifact
 ```
