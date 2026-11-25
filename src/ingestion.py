@@ -14,7 +14,11 @@ from src.database import (
 )
 from src.feature_engineering import calculate_features
 from src.fraud_predictor import load_model, predict_fraud
-from src.transaction_generator import EVENT_INTERVAL_SECONDS, TransactionSimulator
+from src.transaction_generator import (
+    EVENT_INTERVAL_SECONDS,
+    HISTORY_PER_CUSTOMER,
+    TransactionSimulator,
+)
 from src.validator import validate_transaction
 
 
@@ -140,7 +144,46 @@ def process_transaction(transaction, db_path=DB_PATH, is_fraud=None):
 
 
 # ----------------------------------------
-# 3. START LIVE INGESTION SERVICE
+# 3. CUSTOMER HISTORY WARM-UP
+# ----------------------------------------
+
+# Share of live events that are malformed or duplicate records.
+BAD_DATA_RATE = 0.04
+
+
+def warm_up_history(simulator, db_path=DB_PATH):
+    """Give customers back-history before the live stream starts.
+
+    Without it most early transactions are a customer's first, so
+    amount_ratio / city_changed carry no signal and fraud goes
+    unflagged. The training replay applies the same warm-up, so the
+    model sees the same distribution. Returns rows inserted.
+    """
+
+    conn = sqlite3.connect(db_path, timeout=10)
+    try:
+        counts = dict(conn.execute(
+            "SELECT customer_id, COUNT(*) FROM transactions GROUP BY customer_id"
+        ).fetchall())
+        needy = {
+            c["customer_id"]
+            for c in simulator.customers
+            if counts.get(c["customer_id"], 0) < HISTORY_PER_CUSTOMER
+        }
+        if not needy:
+            return 0
+
+        rows = [t for t in simulator.history() if t["customer_id"] in needy]
+        with conn:
+            for transaction in rows:
+                insert_transaction(conn, transaction)
+        return len(rows)
+    finally:
+        conn.close()
+
+
+# ----------------------------------------
+# 4. START LIVE INGESTION SERVICE
 # ----------------------------------------
 
 def main():
@@ -160,7 +203,11 @@ def main():
     print("Dashboard             : Run separately")
     print("-" * 65)
 
-    simulator = TransactionSimulator()
+    simulator = TransactionSimulator(bad_data_rate=BAD_DATA_RATE)
+
+    added = warm_up_history(simulator)
+    if added:
+        print(f"Customer history     : seeded {added:,} past transactions")
 
     try:
         while True:

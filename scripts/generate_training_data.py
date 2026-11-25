@@ -30,6 +30,11 @@ def main():
     create_schema(conn)
 
     now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+    # Same customer back-history the live pipeline seeds at startup.
+    for transaction in simulator.history(end=now):
+        insert_transaction(conn, transaction)
+
     rows = []
 
     for _ in range(N_TRANSACTIONS):

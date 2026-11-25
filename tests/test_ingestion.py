@@ -116,4 +116,20 @@ def test_real_model_scores_a_transaction(monkeypatch, db_path, make_transaction)
             "SELECT fraud_score, model_version FROM fraud_predictions"
         ).fetchone()
     assert 0.0 <= score <= 1.0
-    assert version == "v2.0"
+    assert version == "v2.1"
+
+
+def test_warm_up_history_seeds_once(db_path):
+    import sqlite3
+
+    from src.ingestion import warm_up_history
+    from src.transaction_generator import HISTORY_PER_CUSTOMER, TransactionSimulator
+
+    simulator = TransactionSimulator(n_customers=5, seed=1)
+    assert warm_up_history(simulator, db_path) == 5 * HISTORY_PER_CUSTOMER
+    assert warm_up_history(simulator, db_path) == 0
+
+    with sqlite3.connect(db_path) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM transactions").fetchone()[0] \
+            == 5 * HISTORY_PER_CUSTOMER
+        assert conn.execute("SELECT COUNT(*) FROM fraud_predictions").fetchone()[0] == 0

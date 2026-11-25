@@ -159,6 +159,9 @@ def load_pipeline_status(since_iso):
                 ON p.transaction_id = t.transaction_id
             WHERE p.transaction_id IS NULL
               AND t.timestamp >= ?
+              -- Seeded customer back-history predates scoring and is
+              -- never scored by design, so it is not a pipeline gap.
+              AND t.timestamp >= (SELECT MIN(predicted_at) FROM fraud_predictions)
         """, (since_iso,)).fetchone()[0]
 
     if last_prediction is not None:

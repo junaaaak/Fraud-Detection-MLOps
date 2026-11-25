@@ -30,7 +30,7 @@ FEATURES = [
     "amount_ratio",
     "city_changed",
 ]
-MODEL_VERSION = "v2.0"
+MODEL_VERSION = "v2.1"
 
 
 def best_f1_threshold(y_true, scores):

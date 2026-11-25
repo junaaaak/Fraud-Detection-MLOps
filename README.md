@@ -10,6 +10,10 @@ with a Streamlit dashboard for live monitoring.
    from 200 customers, each with a home city, usual device and typical spend.
    About 5% of transactions belong to labelled fraud episodes: amount spikes,
    new cities and rapid bursts.
+   Customer profiles are fixed (seeded), and on startup ingestion seeds ~20
+   past transactions per customer so behavioural features work from the
+   first live event. About 4% of live events are deliberately malformed or
+   duplicate records, to exercise validation and quarantine.
 2. **Validation** (`src/validator.py`) rejects malformed transactions into
    `quarantine_transactions`.
 3. **Feature engineering** (`src/feature_engineering.py`) computes
